@@ -1,0 +1,183 @@
+#include <iostream>
+#include <windows.h>
+#include <string>
+#include <iomanip>
+#include <list>
+#include <numeric>
+using namespace std;
+
+// Глобальные переменные для синхронизации и учёта времени
+DWORD startTime = 0;
+DWORD finishTime = 0;
+DWORD allTime = -1; // Переменная для хранения общего времени выполнения
+
+size_t blocksIterator; // Счётчик обработанных блоков
+size_t blocksNumber; // Общее количество блоков для обработки
+
+HANDLE synchIteration; // Мьютекс для синхронизации получения нового блока
+HANDLE synchSummary; // Мьютекс для синхронизации записи результата в общий список
+
+const size_t BLOCKSIZE = 10 * 230610; // Размер одного блока итераций (10 * номер студенческого)
+const size_t N = 100000000; // Количество итераций для вычисления числа Пи
+
+list<long double> list1; // Список для хранения промежуточных результатов от каждого потока
+long double summaryResult = 0.0; // Финальный результат вычисления Пи
+
+// Прототипы функций
+DWORD WINAPI countingPI(LPVOID localInThreads);
+void preparingPI(int localNumberOfThreads);
+
+int main(int argc, char** argv)
+{
+    // Настройка консоли для корректного отображения русского языка
+    SetConsoleCP(65001);
+    SetConsoleOutputCP(65001);
+
+    // Массив с количеством потоков для тестирования 
+    int numberOfThreads[] = { 1, 2, 4, 8, 12, 16, 32 };
+    int arraySize = sizeof(numberOfThreads) / sizeof(numberOfThreads[0]); // Размер массива
+
+    // Выводим сообщение о начале работы и используемой технологии
+    cout << "\nМногопоточность: Win32 API.\n";
+
+    // Цикл по всему массиву, запускаем вычисления для каждого количества потоков
+    for (int i = 0; i < arraySize; i++)
+    {
+        // Очищаем список промежуточных результатов и обнуляем финальную сумму
+        list1.clear();
+        summaryResult = 0.0;
+
+        // Вызываем функцию для настройки и запуска многопоточных вычислений
+        preparingPI(numberOfThreads[i]);
+
+        // Выводим результаты: количество потоков, затраченное время и полученное значение Пи
+        cout << "\nКоличество потоков: " << numberOfThreads[i]
+            << "\nВремя: " << allTime << " мс"
+            << "\nПи: " << setprecision(15) << summaryResult << "\n";
+    }
+    return 0;
+}
+
+// Функция, выполняемая в каждом отдельном потоке
+DWORD WINAPI countingPI(LPVOID localInThreads)
+{
+    int i;
+    int localIndicator = 1; // Флаг, указывающий, продолжать ли вычисления (1 - да, 0 - нет)
+    size_t startPoint = 2;
+    size_t endPoint = 1; // Начальная и конечная точки для текущего блока итераций
+    long double localResult = 0.0; // Переменная для хранения локальной суммы одного блока
+
+    // Цикл продолжается, пока есть необработанные блоки
+    while (localIndicator != 0)
+    {
+        // Захватываем мьютекс для безопасного получения индекса блока
+        DWORD waitError = WaitForSingleObject(synchIteration, INFINITE);
+        if (waitError != WAIT_OBJECT_0)
+        {
+            // Сообщение об ошибке, если не удалось захватить мьютекс
+            cout << "Ошибка с synchIteration (" << waitError << "). Последний номер ошибки: " << GetLastError() << "\n";
+        }
+
+        // Проверяем, остались ли еще необработанные блоки
+        if (blocksIterator < blocksNumber)
+        {
+            // Рассчитываем начальную и конечную точки для следующего блока
+            startPoint = blocksIterator * BLOCKSIZE;
+            endPoint = (blocksIterator + 1) * BLOCKSIZE - 1;
+
+            // Корректируем конечную точку, чтобы не выйти за пределы общего количества итераций
+            if (endPoint > N - 1)
+            {
+                endPoint = N - 1;
+            }
+            // Увеличиваем счетчик обработанных блоков для других потоков
+            blocksIterator = blocksIterator + 1;
+        }
+        else
+        {
+            // Если блоков больше нет, сбрасываем начальную и конечную точки
+            startPoint = 2;
+            endPoint = 1;
+        }
+        // Освобождаем мьютекс, чтобы другие потоки могли получить доступ к счетчику блоков
+        ReleaseMutex(synchIteration);
+
+        // Проверяем, есть ли что вычислять в полученном блоке
+        if (startPoint <= endPoint)
+        {
+            localResult = 0.0;
+            // Вычисление частичной суммы для заданного диапазона
+            for (i = startPoint; i++ <= endPoint;)
+            {
+                localResult = localResult + (4 / (1 + (((long double)i + 0.5) / (long double)N) * (((long double)i + 0.5) / (long double)N)));
+            }
+
+            // Захватываем мьютекс для безопасной записи результата в общий список
+            waitError = WaitForSingleObject(synchSummary, INFINITE);
+            if (waitError != WAIT_OBJECT_0)
+            {
+                // Сообщение об ошибке, если не удалось захватить мьютекс
+                cout << "Ошибка с synchSummary (" << waitError << "). Последний номер ошибки: " << GetLastError() << endl;
+            }
+            // Добавляем локальную сумму потока в общий список результатов
+            list1.push_back(localResult);
+            // Освобождаем мьютекс
+            ReleaseMutex(synchSummary);
+        }
+        else
+        {
+            // Если все блоки вычислены (startPoint > endPoint), устанавливаем флаг для завершения цикла потоком
+            localIndicator = 0;
+        }
+    }
+    return 0;
+}
+
+// Функция для подготовки и запуска многопоточных вычислений
+void preparingPI(int localNumberOfThreads)
+{
+    blocksIterator = 0; // Перед началом сбрасываем счетчик блоков
+    // Вычисляем общее количество блоков, округляя в большую сторону
+    blocksNumber = N % BLOCKSIZE == 0 ? (N / BLOCKSIZE) : (N / BLOCKSIZE + 1);
+    int i = 0;
+    // Создаем массив для хранения дескрипторов потоков
+    HANDLE* threadsArray = new HANDLE[localNumberOfThreads];
+
+    // Создаем два мьютекса для синхронизации
+    synchIteration = CreateMutex(NULL, FALSE, NULL); // Для распределения блоков
+    synchSummary = CreateMutex(NULL, FALSE, NULL); // Для записи в общий список
+
+    // Создаем потоки в приостановленном состоянии (CREATE_SUSPENDED)
+    for (i = 0; i < localNumberOfThreads; i++)
+    {
+        threadsArray[i] = CreateThread(NULL, 0, countingPI, NULL, CREATE_SUSPENDED, NULL);
+    }
+
+    startTime = GetTickCount(); // Засекаем время начала вычислений
+
+    // Запускаем все созданные потоки
+    for (unsigned i = 0; i < localNumberOfThreads; i++)
+    {
+        ResumeThread(threadsArray[i]);
+    }
+
+    // Ожидаем завершения работы всех потоков
+    DWORD waitError = WaitForMultipleObjects(localNumberOfThreads, threadsArray, TRUE, INFINITE);
+
+    // Суммируем все промежуточные результаты из списка и усредняем
+    summaryResult = std::accumulate(std::begin(list1), std::end(list1), 0.0);
+    summaryResult = summaryResult / N;
+
+    finishTime = GetTickCount(); // Засекаем время окончания вычислений
+    allTime = finishTime - startTime; // Вычисляем общее время работы
+
+    // Закрываем дескрипторы всех потоков и мьютексов
+    for (i = 0; i < localNumberOfThreads; ++i)
+    {
+        CloseHandle(threadsArray[i]);
+    }
+    CloseHandle(synchIteration);
+    CloseHandle(synchSummary);
+
+    delete[] threadsArray; // Освобождаем память из-под массива дескрипторов
+}
