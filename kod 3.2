@@ -1,0 +1,76 @@
+#include <iostream>
+#include <string>
+#include <iomanip>
+#include <chrono>
+#include <omp.h>
+using namespace std;
+using namespace std::chrono;
+
+// Глобальные переменные для замера времени
+high_resolution_clock::time_point startTime;
+high_resolution_clock::time_point finishTime;
+long long allTime = -1; // Переменная для хранения общего времени выполнения
+
+const size_t BLOCKSIZE = 10 * 230610; // Размер одного блока итераций (10 * номер студенческого)
+const size_t N = 100000000; // Количество итераций для вычисления числа Пи
+
+// Прототип функции для вычисления Пи
+long double countingPI(size_t localIterations, size_t localBlocksize, int localNumberOfThreads);
+
+int main(int argc, char **argv)
+{
+    // Установка локали для русского языка в Linux
+    setlocale(LC_ALL, "ru_RU.UTF-8");
+
+    // Массив с количеством потоков для тестирования
+    int numberOfThreads[] = {1, 2, 4, 8, 12, 16};
+    int arraySize = sizeof(numberOfThreads) / sizeof(numberOfThreads[0]); // Определяем размер массива
+    long double piNumber;
+
+    // Выводим сообщение о начале работы и используемой технологии
+    cout << "\nМногопоточность: Open MP.\n";
+
+    // Цикл по всему массиву, запускаем вычисления для каждого количества потоков
+    for (int i = 0; i < arraySize; i++)
+    {
+        // Сбрасываем переменные времени перед новым запуском
+        allTime = 0;
+        
+        // Вызываем функцию вычисления Пи с заданными параметрами
+        piNumber = countingPI(N, BLOCKSIZE, numberOfThreads[i]);
+
+        // Выводим результаты: количество потоков, затраченное время и полученное значение Пи
+        cout << "\nКоличество потоков: " << numberOfThreads[i] 
+             << " Время: " << allTime << " ms" 
+             << " Пи: " << setprecision(15) << piNumber << "\n";
+    }
+    return 0;
+}
+
+// Функция для параллельного вычисления числа Пи с помощью OpenMP
+long double countingPI(size_t localIterations, size_t localBlocksize, int localNumberOfThreads)
+{
+    int i = 0;
+    startTime = high_resolution_clock::now(); // Засекаем время начала вычислений
+    long double summaryResult = 0.0; // Переменная для финального результата Пи
+
+    // Начало параллельной секции
+    #pragma omp parallel shared(allTime) reduction(+: summaryResult) num_threads(localNumberOfThreads)
+    {
+        // Директива for с динамическим планированием загрузки потоков
+        // Блоки итераций размером localBlocksize будут динамически распределяться между потоками
+        #pragma omp for schedule(dynamic, localBlocksize) nowait
+        for (i = 0; i < localIterations; i++)
+        {
+            // Каждый поток выполняет вычисление для своей порции итераций
+            // и добавляет результат к общей сумме summaryResult (благодаря reduction)
+            summaryResult = summaryResult + (4 / (1 + (((long double)i + 0.5) / (long double)localIterations) * (((long double)i + 0.5) / (long double)localIterations)));
+        }
+    } // Здесь происходит неявная барьерная синхронизация и суммирование всех локальных копий summaryResult
+
+    // Усредняем результат после завершения всех потоков
+    summaryResult = summaryResult / localIterations; 
+    finishTime = high_resolution_clock::now(); // Засекаем время окончания вычислений
+    allTime = duration_cast<milliseconds>(finishTime - startTime).count(); // Вычисляем общее затраченное время
+    return summaryResult; // Возвращаем вычисленное значение числа Пи
+}
